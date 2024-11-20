@@ -1,7 +1,7 @@
 import random
 
 import numba
-
+import numpy as np
 import minitorch
 
 datasets = minitorch.datasets
@@ -29,8 +29,9 @@ class Network(minitorch.Module):
         self.layer3 = Linear(hidden, 1, backend)
 
     def forward(self, x):
-        # TODO: Implement for Task 3.5.
-        raise NotImplementedError("Need to implement for Task 3.5")
+        middle = self.layer1.forward(x).relu()
+        end = self.layer2.forward(middle).relu()
+        return self.layer3.forward(end).sigmoid()
 
 
 class Linear(minitorch.Module):
@@ -44,7 +45,11 @@ class Linear(minitorch.Module):
 
     def forward(self, x):
         # TODO: Implement for Task 3.5.
-        raise NotImplementedError("Need to implement for Task 3.5")
+        batch, in_size = x.shape
+        return (
+            self.weights.value.view(1, in_size, self.out_size)
+            * x.view(batch, in_size, 1)
+        ).sum(1).view(batch, self.out_size) + self.bias.value.view(self.out_size)
 
 
 class FastTrain:
@@ -60,11 +65,14 @@ class FastTrain:
         return self.model.forward(minitorch.tensor(X, backend=self.backend))
 
     def train(self, data, learning_rate, max_epochs=500, log_fn=default_log_fn):
+
         self.model = Network(self.hidden_layers, self.backend)
         optim = minitorch.SGD(self.model.parameters(), learning_rate)
         BATCH = 10
         losses = []
-
+        import time
+        time_taken = []
+        time_a = time.time()
         for epoch in range(max_epochs):
             total_loss = 0.0
             c = list(zip(data.X, data.y))
@@ -95,7 +103,11 @@ class FastTrain:
                 out = self.model.forward(X).view(y.shape[0])
                 y2 = minitorch.tensor(data.y)
                 correct = int(((out.detach() > 0.5) == y2).sum()[0])
+                time_b = time.time()
+                time_taken.append(time_b - time_a)
                 log_fn(epoch, total_loss, correct, losses)
+                time_a = time_b
+        print(f"Mean time taken 10 epochs: {np.mean(time_taken)}")
 
 
 if __name__ == "__main__":
@@ -116,7 +128,7 @@ if __name__ == "__main__":
     if args.DATASET == "xor":
         data = minitorch.datasets["Xor"](PTS)
     elif args.DATASET == "simple":
-        data = minitorch.datasets["Simple"].simple(PTS)
+        data = minitorch.datasets["Simple"](PTS)
     elif args.DATASET == "split":
         data = minitorch.datasets["Split"](PTS)
 
