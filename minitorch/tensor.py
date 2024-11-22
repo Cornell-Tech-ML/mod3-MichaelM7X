@@ -30,6 +30,7 @@ from .tensor_functions import (
     Sigmoid,
     Sum,
     View,
+    tensor,
 )
 
 
@@ -353,18 +354,16 @@ class Tensor:
     def all(self, dim: Optional[int] = None) -> Tensor:
         """Returns True if all elements are True."""
         if dim is None:
-            return All.apply(self)
+            return All.apply(self.view(self.size), self._ensure_tensor(0))
         else:
-            return All.apply(self, Tensor.make([dim], (1,), backend=self.backend))
+            return All.apply(self, self._ensure_tensor(dim))
 
     def sum(self, dim: Optional[int] = None) -> Tensor:
         """Compute the sum along the specified dimension."""
         if dim is None:
-            # return Sum.apply(self)
             return Sum.apply(self.contiguous().view(self.size), self._ensure_tensor(0))
         else:
             return Sum.apply(self, self._ensure_tensor(dim))
-            # return Sum.apply(self, Tensor.make([dim], (1,), backend=self.backend))
 
     def mean(self, dim: Optional[int] = None) -> Tensor:
         """Compute the mean along the specified dimension."""
@@ -375,15 +374,11 @@ class Tensor:
 
     def permute(self, *dims: int) -> Tensor:
         """Permute the dimensions of the tensor."""
-        return Permute.apply(
-            self, Tensor.make(list(dims), (len(dims),), backend=self.backend)
-        )
+        return Permute.apply(self, tensor(list(dims)))
 
     def view(self, *shape: int) -> Tensor:
         """Reshape the tensor to the specified shape."""
-        return View.apply(
-            self, Tensor.make(list(shape), (len(shape),), backend=self.backend)
-        )
+        return View.apply(self, tensor(list(shape)))
 
     def zero_grad_(self) -> None:
         """Resets the gradient to None."""

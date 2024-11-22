@@ -19,7 +19,7 @@ if TYPE_CHECKING:
     from typing import Callable, Optional
 
     from .tensor import Tensor
-    from .tensor_data import Index, Shape, Storage, Strides
+    from .tensor_data import Shape, Storage, Strides
 
 # TIP: Use `NUMBA_DISABLE_JIT=1 pytest tests/ -m task3_1` to run these tests without JIT.
 
@@ -381,50 +381,46 @@ def _tensor_matrix_multiply(
         None : Fills in `out`
 
     """
-    # Calculate batch strides for tensors A and B
-    a_batch_step = a_strides[0] if a_shape[0] > 1 else 0  # noqa: F841
-    b_batch_step = b_strides[0] if b_shape[0] > 1 else 0  # noqa: F841
+    a_batch_stride = a_strides[0] if a_shape[0] > 1 else 0  # noqa: F841
+    b_batch_stride = b_strides[0] if b_shape[0] > 1 else 0  # noqa: F841
 
-    # Ensure the inner dimensions match for matrix multiplication
-    assert a_shape[-1] == b_shape[-2]
+    # Validate compatibility: the last dimension of `a` must match the second-to-last of `b`
+    if a_shape[-1] != b_shape[-2]:
+        raise ValueError("Matrix dimensions are incompatible for multiplication")
 
-    # Iterate over each position in the output tensor
-    for flat_out_idx in prange(len(out)):
-        # Initialize a multi-dimensional index for the output tensor
-        output_coords: Index = np.zeros(len(out_shape), dtype=np.int32)
+    # Iterate over each flat index in the output tensor in parallel
+    for out_flat_idx in prange(len(out)):
+        # Compute multi-dimensional index for the output tensor
+        out_coords = np.zeros(len(out_shape), dtype=np.int32)
+        to_index(out_flat_idx, out_shape, out_coords)
 
-        # Convert the flat index to a multi-dimensional index
-        to_index(flat_out_idx, out_shape, output_coords)
+        # Initialize an accumulator for the result at this position
+        accumulated_value = 0.0
 
-        # Get the size of the inner loop (shared dimension in matrix multiplication)
-        shared_dim_size = a_shape[-1]
+        # Iterate over the shared dimension (inner loop for matrix multiplication)
+        for k in range(a_shape[-1]):
+            # Compute the adjusted indices for `a` and `b` tensors
+            a_coords = out_coords.copy()
+            b_coords = out_coords.copy()
 
-        # Perform the inner product for the current output position
-        for shared_idx in range(shared_dim_size):
-            # Initialize multi-dimensional indices for tensors A and B
-            a_coords: Index = np.zeros(len(a_shape), dtype=np.int32)
-            b_coords: Index = np.zeros(len(b_shape), dtype=np.int32)
+            # Update the coordinates for the inner dimension
+            a_coords[-1] = k
+            b_coords[-2] = k
 
-            # Copy the output coordinates to adjust for broadcasting
-            a_temp_coords = output_coords.copy()
-            b_temp_coords = output_coords.copy()
+            # Adjust for broadcasting
+            broadcast_index(a_coords, out_shape, a_shape, a_coords)
+            broadcast_index(b_coords, out_shape, b_shape, b_coords)
 
-            # Update indices to reflect the current shared dimension position
-            a_temp_coords[-1] = shared_idx
-            b_temp_coords[-2] = shared_idx
+            # Convert multi-dimensional indices to flat indices for storage access
+            a_pos = index_to_position(a_coords, a_strides)
+            b_pos = index_to_position(b_coords, b_strides)
 
-            # Broadcast the coordinates for tensors A and B
-            broadcast_index(a_temp_coords, out_shape, a_shape, a_coords)
-            broadcast_index(b_temp_coords, out_shape, b_shape, b_coords)
+            # Perform the multiplication and accumulate the result
+            accumulated_value += a_storage[a_pos] * b_storage[b_pos]
 
-            # Compute the flat positions in tensors A and B
-            a_flat_idx = index_to_position(a_coords, a_strides)
-            b_flat_idx = index_to_position(b_coords, b_strides)
-
-            # Accumulate the product into the output storage
-            out[flat_out_idx] += a_storage[a_flat_idx] * b_storage[b_flat_idx]
+        # Write the accumulated result to the output tensor
+        out[out_flat_idx] = accumulated_value
 
 
-# Use Numba's Just-In-Time compilation for optimized parallel execution
 tensor_matrix_multiply = njit(_tensor_matrix_multiply, parallel=True)
 assert tensor_matrix_multiply is not None
