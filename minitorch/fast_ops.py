@@ -168,22 +168,38 @@ def tensor_map(
         in_shape: Shape,
         in_strides: Strides,
     ) -> None:
+        # Check if output and input tensors are aligned in shape and strides
         if np.array_equal(out_shape, in_shape) and np.array_equal(
             out_strides, in_strides
         ):
-            for i in prange(len(out)):
-                out[i] = fn(in_storage[i])
+            # Directly apply the mapping function if shapes and strides align
+            for output_idx in prange(len(out)):
+                out[output_idx] = fn(in_storage[output_idx])
         else:
-            for i in prange(len(out)):
-                out_index = np.zeros(MAX_DIMS, np.int32)
-                in_index = np.zeros(MAX_DIMS, np.int32)
-                to_index(i, out_shape, out_index)
-                broadcast_index(out_index, out_shape, in_shape, in_index)
-                j = index_to_position(in_index, in_strides)
-                o = index_to_position(out_index, out_strides)
-                out[o] = fn(in_storage[j])
+            # Handle the case where shapes and strides do not align
+            for flat_idx in prange(len(out)):
+                # Initialize index arrays for input and output tensors
+                output_coords = np.zeros(MAX_DIMS, np.int32)
+                input_coords = np.zeros(MAX_DIMS, np.int32)
+                
+                # Convert flat index to multi-dimensional coordinates for output
+                to_index(flat_idx, out_shape, output_coords)
+                
+                # Adjust coordinates for broadcasting between output and input tensors
+                broadcast_index(output_coords, out_shape, in_shape, input_coords)
+                
+                # Determine flat index for input tensor using strides
+                input_pos = index_to_position(input_coords, in_strides)
+                
+                # Determine flat index for output tensor using strides
+                output_pos = index_to_position(output_coords, out_strides)
+                
+                # Apply the mapping function and store the result in the output tensor
+                out[output_pos] = fn(in_storage[input_pos])
 
+    # Use Numba's Just-In-Time compilation for optimized parallel execution
     return njit(_map, parallel=True)  # type: ignore
+
 
 
 def tensor_zip(
@@ -220,27 +236,42 @@ def tensor_zip(
         b_shape: Shape,
         b_strides: Strides,
     ) -> None:
+        # Check if output, input A, and input B tensors are aligned in shape and strides
         if (
             np.array_equal(out_shape, a_shape)
             and np.array_equal(out_strides, a_strides)
             and np.array_equal(out_shape, b_shape)
             and np.array_equal(out_strides, b_strides)
         ):
-            for i in prange(len(out)):
-                out[i] = fn(a_storage[i], b_storage[i])
+            # Directly apply the function element-wise when shapes and strides align
+            for out_idx in prange(len(out)):
+                out[out_idx] = fn(a_storage[out_idx], b_storage[out_idx])
         else:
-            for i in prange(len(out)):
-                out_index = np.zeros(MAX_DIMS, np.int32)
-                a_index = np.zeros(MAX_DIMS, np.int32)
-                b_index = np.zeros(MAX_DIMS, np.int32)
-                to_index(i, out_shape, out_index)
-                broadcast_index(out_index, out_shape, a_shape, a_index)
-                broadcast_index(out_index, out_shape, b_shape, b_index)
-                aj = index_to_position(a_index, a_strides)
-                bj = index_to_position(b_index, b_strides)
-                out[i] = fn(a_storage[aj], b_storage[bj])
+            # Handle the case where shapes and strides do not align
+            for flat_idx in prange(len(out)):
+                # Initialize index arrays for output, input A, and input B tensors
+                output_coords = np.zeros(MAX_DIMS, np.int32)
+                a_coords = np.zeros(MAX_DIMS, np.int32)
+                b_coords = np.zeros(MAX_DIMS, np.int32)
+                
+                # Convert flat index to multi-dimensional coordinates for output
+                to_index(flat_idx, out_shape, output_coords)
+                
+                # Adjust coordinates for broadcasting for input tensors A and B
+                broadcast_index(output_coords, out_shape, a_shape, a_coords)
+                broadcast_index(output_coords, out_shape, b_shape, b_coords)
+                
+                # Determine flat indices for input tensors A and B using strides
+                a_flat_idx = index_to_position(a_coords, a_strides)
+                b_flat_idx = index_to_position(b_coords, b_strides)
+                
+                # Apply the function and store the result in the output tensor
+                out[flat_idx] = fn(a_storage[a_flat_idx], b_storage[b_flat_idx])
 
+    # Use Numba's Just-In-Time compilation for optimized parallel execution
     return njit(_zip, parallel=True)  # type: ignore
+
+        
 
 
 def tensor_reduce(
@@ -273,23 +304,42 @@ def tensor_reduce(
         a_strides: Strides,
         reduce_dim: int,
     ) -> None:
-        for ordinal in prange(out.size):
-            reduce_size = a_shape[reduce_dim]
-            out_index: Index = np.zeros(MAX_DIMS, dtype=np.int32)
-            to_index(ordinal, out_shape, out_index)
+                # Loop over each position in the output tensor
+        for out_flat_idx in prange(out.size):
+            # Get the size of the dimension being reduced
+            reduction_axis_size = a_shape[reduce_dim]
 
-            a_index = out_index.copy()
-            a_index[reduce_dim] = 0
-            total = a_storage[index_to_position(a_index, a_strides)]
+            # Initialize a multi-dimensional index for the output tensor
+            out_coords = np.zeros(MAX_DIMS, dtype=np.int32)
+            
+            # Convert the flat index to a multi-dimensional index for output
+            to_index(out_flat_idx, out_shape, out_coords)
 
-            for i in range(1, reduce_size):
-                a_index[reduce_dim] = i
-                a_ordinal = index_to_position(a_index, a_strides)
-                total = fn(total, a_storage[a_ordinal])
+            # Create a copy of the output coordinates for indexing the input tensor
+            input_coords = out_coords.copy()
 
-            out[ordinal] = total
+            # Initialize the reduction result with the first element along the reduction axis
+            input_coords[reduce_dim] = 0
+            initial_position = index_to_position(input_coords, a_strides)
+            accumulated_value = a_storage[initial_position]
 
+            # Iterate over the remaining elements along the reduction axis
+            for reduction_idx in range(1, reduction_axis_size):
+                # Update the coordinate for the current position in the reduction axis
+                input_coords[reduce_dim] = reduction_idx
+
+                # Convert the coordinates to a flat index for the input tensor
+                current_position = index_to_position(input_coords, a_strides)
+
+                # Perform the reduction operation
+                accumulated_value = fn(accumulated_value, a_storage[current_position])
+
+            # Store the final reduced value in the output tensor
+            out[out_flat_idx] = accumulated_value
+
+    # Use Numba's Just-In-Time compilation for optimized parallel execution
     return njit(_reduce, parallel=True)  # type: ignore
+
 
 
 def _tensor_matrix_multiply(
@@ -335,30 +385,50 @@ def _tensor_matrix_multiply(
         None : Fills in `out`
 
     """
-    a_batch_stride = a_strides[0] if a_shape[0] > 1 else 0  # noqa: F841
-    b_batch_stride = b_strides[0] if b_shape[0] > 1 else 0  # noqa: F841
+        # Calculate batch strides for tensors A and B
+    a_batch_step = a_strides[0] if a_shape[0] > 1 else 0  # noqa: F841
+    b_batch_step = b_strides[0] if b_shape[0] > 1 else 0  # noqa: F841
 
-    # Ensure compatibility
+    # Ensure the inner dimensions match for matrix multiplication
     assert a_shape[-1] == b_shape[-2]
-    for i in prange(len(out)):
-        out_index: Index = np.zeros(len(out_shape), dtype=np.int32)
-        tmp_i = i + 0
-        to_index(tmp_i, out_shape, out_index)
-        inner_loop = a_shape[-1]
-        for j in range(inner_loop):
-            tmp_j = j + 0
-            a_index: Index = np.zeros(len(a_shape), dtype=np.int32)
-            b_index: Index = np.zeros(len(b_shape), dtype=np.int32)
-            a_big_index = out_index.copy()
-            b_big_index = out_index.copy()
-            a_big_index[-1] = tmp_j
-            b_big_index[-2] = tmp_j
-            broadcast_index(a_big_index, out_shape, a_shape, a_index)
-            broadcast_index(b_big_index, out_shape, b_shape, b_index)
-            a_position = index_to_position(a_index, a_strides)
-            b_position = index_to_position(b_index, b_strides)
-            out[i] += a_storage[a_position] * b_storage[b_position]
+
+    # Iterate over each position in the output tensor
+    for flat_out_idx in prange(len(out)):
+        # Initialize a multi-dimensional index for the output tensor
+        output_coords: Index = np.zeros(len(out_shape), dtype=np.int32)
+        
+        # Convert the flat index to a multi-dimensional index
+        to_index(flat_out_idx, out_shape, output_coords)
+        
+        # Get the size of the inner loop (shared dimension in matrix multiplication)
+        shared_dim_size = a_shape[-1]
+        
+        # Perform the inner product for the current output position
+        for shared_idx in range(shared_dim_size):
+            # Initialize multi-dimensional indices for tensors A and B
+            a_coords: Index = np.zeros(len(a_shape), dtype=np.int32)
+            b_coords: Index = np.zeros(len(b_shape), dtype=np.int32)
+            
+            # Copy the output coordinates to adjust for broadcasting
+            a_temp_coords = output_coords.copy()
+            b_temp_coords = output_coords.copy()
+            
+            # Update indices to reflect the current shared dimension position
+            a_temp_coords[-1] = shared_idx
+            b_temp_coords[-2] = shared_idx
+            
+            # Broadcast the coordinates for tensors A and B
+            broadcast_index(a_temp_coords, out_shape, a_shape, a_coords)
+            broadcast_index(b_temp_coords, out_shape, b_shape, b_coords)
+            
+            # Compute the flat positions in tensors A and B
+            a_flat_idx = index_to_position(a_coords, a_strides)
+            b_flat_idx = index_to_position(b_coords, b_strides)
+            
+            # Accumulate the product into the output storage
+            out[flat_out_idx] += a_storage[a_flat_idx] * b_storage[b_flat_idx]
 
 
+# Use Numba's Just-In-Time compilation for optimized parallel execution
 tensor_matrix_multiply = njit(_tensor_matrix_multiply, parallel=True)
 assert tensor_matrix_multiply is not None
