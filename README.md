@@ -482,7 +482,7 @@ before the loop is executed and reused inside the loop):
 None
 ```
 
-# Train a tensor Model
+# Train a Tensor Model
 
 # CPU (simple)
 ```
